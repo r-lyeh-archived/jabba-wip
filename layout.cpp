@@ -11,14 +11,56 @@ struct point {
 };
 MEDEA_DEFINE( point &it, (it.x, it.y) );
 
+bool operator==( const point &a, const point &b ) {
+    return fabs(a.x - b.x) < 1e-6 && fabs(a.y - b.y) < 1e-6;
+}
+bool operator!=( const point &a, const point &b ) {
+    return !(a == b);
+}
+point operator+( const point &a, const point &b ) {
+    point c;
+    c.x = a.x + b.x;
+    c.y = a.y + b.y;
+    return c;
+}
+point operator*( const point &a, float f ) {
+    point c = a;
+    c.x *= f;
+    c.y *= f;
+    return c;
+}
+
 struct rect : public point {
     float w = -1, h = -1; 
     std::string name;
 };
 MEDEA_DEFINE( rect &it, ( (point&)it, it.w, it.h, it.name ) );
 
+bool operator==( const rect &a, const rect &b ) {
+    if( (point&)a != (point&)b) return false;
+    return fabs(a.w - b.w) < 1e-6 && fabs(a.h - b.h) < 1e-6;
+}
+bool operator!=( const rect &a, const rect &b ) {
+    return !(a == b);
+}
+rect operator+( const rect &a, const rect &b ) {
+    rect c;
+    ((point &)c) = (point)a + (point)b;
+    c.w = a.w + b.w;
+    c.h = a.h + b.h;
+    c.name = a.name;
+    return c;
+}
+rect operator*( const rect &a, float f ) {
+    rect c = a;
+    ((point &)c) = (point)a * f;
+    c.w *= f;
+    c.h *= f;
+    return c;
+}
+
 struct layout : public rect {
-    mutable std::map< char, rect > children;
+    mutable std::map< char, rect > children; // per name (@todo, per depth)
 
     const rect &operator[]( char x ) const {
         return children[ x ];
@@ -99,23 +141,26 @@ std::string debug( const layout &lyt ) {
     return medea::to_json( lyt );
 }
 
-std::string dump( const layout &lyt_, int w = 27, int h = 5 ) {
+std::string dump( const layout &lyt_, int w = 42, int h = 10 ) {
     auto lyt = rescale( lyt_, w, h );
 
+    // fix
     for( auto &pair : lyt.children ) {
         auto &name = pair.first;
         auto &rect = pair.second;
-
-        if( rect.w == 0 ) rect.w++;
-        if( rect.h == 0 ) rect.h++;
     }
 
+    // fill
     wire::strings screen;
     for( int y = 0; y < h; ++y ) {
         screen.push_back( wire::string( w, '.' ) );
     }
 
-    for( auto &pair : lyt.children ) {
+    // invert depth
+    std::vector< std::pair< char, rect > > reverse( lyt.children.rbegin(), lyt.children.rend() );
+
+    // render
+    for( auto &pair : reverse ) {
         auto &name = pair.first;
         auto &rect = pair.second;
 
@@ -124,29 +169,77 @@ std::string dump( const layout &lyt_, int w = 27, int h = 5 ) {
         screen[ y ][ x ] = name;
     }    
 
-    return screen.str("\1\n");
+    return screen.str("\1\n") + debug(lyt);
 }
 
 #include "deps/sand/sand.hpp"
 #include "deps/sand/sand.cpp"
 #include "deps/tween/tween.hpp"
 #include "deps/rlutil/rlutil.h"
+#include "deps/rand/rand.hpp"
 
-#include <thread>
-std::thread morph( layout &lyt, char from, char to, float secs, int ease ) {
-    return std::thread( [&]{
-        auto &cur = lyt[from], src = cur;
-        auto &dst = lyt[to];
-        sand::chrono lp( secs );
-        while( lp.s() < 1 ) {
-            float dt01 = tween::bouncein( lp.s() ); //tween::ease( lp.s(), ease );
-            cur.x = src.x * (1-dt01) + dst.x * dt01;
-            cur.y = src.y * (1-dt01) + dst.y * dt01;
-            cur.w = src.w * (1-dt01) + dst.w * dt01;
-            cur.h = src.h * (1-dt01) + dst.h * dt01;
-            //sand::sleep(1/60.f);            
+template<typename T>
+T interpolate( float dt01, const T &src, const T &dst ) {
+    return src * (1-dt01) + dst * dt01;
+}
+
+template<typename T>
+T interpolate( float dt01, const T &src, const T &dst, int ease ) {
+    return interpolate( tween::ease( ease, dt01 ), src, dst );
+}
+
+template<typename T>
+struct tweener {
+    int ease;
+    const T *src, *dst;
+    T *store;
+    float delay, t0, t1;
+
+    tweener( int ease, float delay, float t1, const T &src, const T &dst, T &store ) : ease(ease),src(&src),dst(&dst),store(&store),delay(delay),t0(-delay),t1(t1)
+    {}
+
+    bool operator()( float dt ) {
+        t0 += dt;
+        if(t0 < 0) {
+            return false;
         }
-    });
+        if( t0 > t1 ) {
+            t0 = t1;
+        }
+        float dt01 = t0 / t1;
+        auto before = *store;
+        auto after = ( *store = interpolate( dt01, *src, *dst, ease ) );
+        bool has_finished = dt01 >= 1 && before == after;
+        return has_finished;
+    }
+
+    void reset() {
+        t0 = -delay;
+        *store = *src;
+    }
+    void swap() {
+        float left = t1 - t0;
+        t0 = left;
+
+        const T *swap = src;
+        src = dst;
+        dst = swap;            
+    }
+};
+
+using tweeners = std::vector< tweener<rect> >;
+
+bool run( tweeners &tws, float dt ) {
+    unsigned finished = 0;
+    for( auto &tw : tws ) {
+        finished += tw(dt);
+    }
+    return finished != tws.size();
+}
+void swap( tweeners &tws ) {
+    for( auto &tw : tws ) {
+        tw.swap();
+    }
 }
 
 int main() {
@@ -164,21 +257,41 @@ int main() {
 
     using namespace rlutil;
 
-    float from = lyt['b'].x;
-    float to = lyt['a'].x;
-
     hidecursor();
     cls();
 
-    auto th = morph(lyt,'h','f',3.5,tween::BOUNCEIN);
+    auto copy = lyt;
 
-    sand::chrono lp( 3.5 );
-    while( lp.s() < 1 ) {
+    int ease = tween::SWING; // rand() % tween::TOTAL; //
+
+    std::vector< tweener<rect> > tws { 
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['a'], copy['b'], lyt['a'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['b'], copy['c'], lyt['b'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['c'], copy['d'], lyt['c'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['d'], copy['e'], lyt['d'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['e'], copy['f'], lyt['e'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['f'], copy['g'], lyt['f'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['g'], copy['h'], lyt['g'] },
+        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['h'], copy['a'], lyt['h'] },
+    };
+
+    for(;;) {
+        sand::sleep(1/60.f);
+
+        if( !run(tws, 1/60.f) ) {
+//          break;
+        }
+
+        if( kbhit() ) {
+			anykey();
+            swap(tws);
+        }
+        
         locate(1, 1);
         printf("%s", dump(lyt).c_str());
         fflush(stdout);
     }
 
-    th.join();
+    showcursor();
 }
 
