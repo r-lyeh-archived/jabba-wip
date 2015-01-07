@@ -1,6 +1,9 @@
 // ascii layout parser
 // - rlyeh
 
+#include "deps/hyde/hyde.hpp"
+#include "deps/hyde/hyde.cpp"
+
 #include <string>
 #include <map>
 #include "deps/wire/wire.hpp"
@@ -57,6 +60,16 @@ rect operator*( const rect &a, float f ) {
     c.w *= f;
     c.h *= f;
     return c;
+}
+bool inside( const rect &r, float x, float y ) {
+    if( x < r.x ) return false;
+    if( y < r.y ) return false;
+    if( x > r.x + r.w ) return false;
+    if( y > r.y + r.h ) return false;
+    return true;
+}
+bool inside( const rect &r, const point &p ) {
+    return inside( r, p.x, p.y );
 }
 
 struct layout : public rect {
@@ -229,6 +242,35 @@ struct tweener {
 
 using tweeners = std::vector< tweener<rect> >;
 
+#include <functional>
+template<typename USERDEF>
+using events = std::map< std::string, std::function<bool(const rect &r, const USERDEF &inputs)> >;
+using callbacks = std::vector< std::function<void()> >;
+
+struct cursor {
+    int x, y, w, h;
+};
+cursor refresh() {
+    CONSOLE_SCREEN_BUFFER_INFO a;
+    HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    GetConsoleScreenBufferInfo(hStdOut,&a);
+
+    static SHORT CX = 0, CY = 0;
+
+    CONSOLE_FONT_INFO ci;
+    GetCurrentConsoleFont(hStdOut,FALSE,&ci);
+
+    POINT p;
+    if (GetCursorPos(&p)) {
+        if (ScreenToClient(GetConsoleWindow(), &p)) {
+            CX = p.x / ci.dwFontSize.X;
+            CY = p.y / ci.dwFontSize.Y;
+        }
+    }
+
+    return { CX, CY, a.srWindow.Right - a.srWindow.Left, a.srWindow.Bottom - a.srWindow.Top };
+}
+
 bool run( tweeners &tws, float dt ) {
     unsigned finished = 0;
     for( auto &tw : tws ) {
@@ -244,15 +286,24 @@ void swap( tweeners &tws ) {
 
 int main() {
 #   define $QUOTE(...) #__VA_ARGS__
-    std::string test = $QUOTE(
+    std::string horizontal = $QUOTE(
         a.........................b
         ........c..........d.......
         ........e..........fff.....
         ...................fff.....
         g.............hhhhhhhhhhhhh
-    ); 
+    ),
+    vertical = $QUOTE(
+        a...b.c.d...e
+        .............
+        .............
+        .............
+        ...........ff
+        g........hhhh
+    );
 
-    auto lyt = parse(test, 1280, 720);
+    bool using_horizontal = true;
+    auto lyt = parse(horizontal, 1280, 720);
     std::cout << debug( lyt ) << std::endl;
 
     using namespace rlutil;
@@ -261,34 +312,116 @@ int main() {
     cls();
 
     auto copy = lyt;
-
     int ease = tween::SWING; // rand() % tween::TOTAL; //
 
-    std::vector< tweener<rect> > tws { 
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['a'], copy['b'], lyt['a'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['b'], copy['c'], lyt['b'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['c'], copy['d'], lyt['c'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['d'], copy['e'], lyt['d'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['e'], copy['f'], lyt['e'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['f'], copy['g'], lyt['f'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['g'], copy['h'], lyt['g'] },
-        { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['h'], copy['a'], lyt['h'] },
+    std::vector< tweener<rect> > tws;
+
+    struct input {
+        int mousex, mousey;
     };
+
+    std::string logger;
+    events<input> evs = { 
+        { "hover", [&]( const rect &r, const input &inp ) {
+            if( inside( r, inp.mousex, inp.mousey ) ) {
+                logger += r.name + ',';
+            }
+            return true;
+        } }
+    };
+
+    auto setup = [&]() {
+        if( using_horizontal ) {
+            lyt = parse(horizontal, 1280, 720);
+        } else {
+            lyt = parse(vertical, 720, 1280);            
+        }
+        copy = lyt;
+        tws = std::vector< tweener<rect> > { 
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['a'], copy['b'], lyt['a'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['b'], copy['c'], lyt['b'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['c'], copy['d'], lyt['c'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['d'], copy['e'], lyt['d'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['e'], copy['f'], lyt['e'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['f'], copy['g'], lyt['f'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['g'], copy['h'], lyt['g'] },
+            { ease, rand2(0.125f,0.5f), rand2(0.250f,0.500f), copy['h'], copy['a'], lyt['h'] } 
+        };        
+    };
+
+    setup();
+
+    hyde::windows::mouse mouse(0,1);
 
     for(;;) {
         sand::sleep(1/60.f);
+        mouse.update();
 
         if( !run(tws, 1/60.f) ) {
 //          break;
         }
 
         if( kbhit() ) {
-			anykey();
+            char ch = getch();
             swap(tws);
+
+            if( ch == ' ' ) {
+                using_horizontal ^= true;
+                setup();
+                cls();
+            }
         }
         
         locate(1, 1);
-        printf("%s", dump(lyt).c_str());
+        if( using_horizontal ) {
+            printf("%s", dump(lyt, 42, 10).c_str());
+        } else {
+            printf("%s", dump(lyt, 10*2, 42/2).c_str());
+        }
+
+        auto arrow = refresh();
+        // console chars to virtual desktop
+        if( using_horizontal ) {
+            arrow.w = 42;
+            arrow.h = 10;
+            arrow.x = ++arrow.x * 1280 / float(arrow.w);
+            arrow.y =   arrow.y *  720 / float(arrow.h);
+        } else {
+            arrow.w = 10*2;
+            arrow.h = 42/2;
+            arrow.x =    arrow.x *  720 / float(arrow.w);
+            arrow.y =  ++arrow.y * 1280 / float(arrow.h);
+        }
+
+        std::cout << arrow.x << ',' << arrow.y << ',' << arrow.w << ',' << arrow.h << " vs " << lyt['e'].x << ',' << lyt['e'].y << ' ' << std::endl;
+
+        mouse.clipped.set( mouse.right.hold() );
+        std::cout
+            << "mouse[0]="
+            << "left["    << (mouse.left.hold()    ? "x]" : " ]")
+            << "middle["  << (mouse.middle.hold()  ? "x]" : " ]")
+            << "right["   << (mouse.right.hold()   ? "x]" : " ]")
+            << "hover["   << (mouse.hover.hold()   ? "x]" : " ]")
+            << "hidden["  << (mouse.hidden.hold()  ? "x]" : " ]")
+            << "clipped[" << (mouse.clipped.hold() ? "x]" : " ]")
+            << " @global(" << mouse.global.newest().x << ',' << mouse.global.newest().y << ")"
+            << " @local("  << mouse.local.newest().x  << ',' << mouse.local.newest().y  << ")"
+            << " @wheel("  << mouse.wheel.newest().y << ")"
+            << "               \n";
+
+        logger.clear();
+        input inp { arrow.x, arrow.y };
+        for( auto &rect : lyt.children ) {
+            for( auto &evpair : evs ) {
+                auto &ev = evpair.second;
+                if( ev ) {
+                    ev( rect.second, inp );
+                }
+            }
+        }
+        if( logger.empty() ) logger = wire::string(40, ' ');
+        printf("%s\n", logger.c_str());
+
         fflush(stdout);
     }
 

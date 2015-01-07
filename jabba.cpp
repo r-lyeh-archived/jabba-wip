@@ -1,10 +1,21 @@
 // jabba, the hud engine. so simple it hurts. boost licensed.
 // - rlyeh ~~ listening to witchrider / black
 
+// workflow
+// - define identifiers, positions and volumes (~rects)
+// - define properties and events per rect
+// - assign callbacks
+// - while( game ) { fullfil tree with events; render tree as HUD; }
+//
+
+// example:
+// - rect dialog = (640,480,@bottom)
+// - dialog["visible"] = false;
+// - dialog["@click"] = []{ dialog["visible"] ^= true; }
+// - render();
+
 #pragma once
 #include "deps/medea/medea.hpp"     // json
-#include "deps/json11/json11.hpp"   // json
-#include "deps/json11/json11.cpp"   // json
 #include "deps/wire/wire.hpp"       // strings
 #include "deps/sand/sand.hpp"       // easings
 #include "deps/sand/sand.cpp"       // easings
