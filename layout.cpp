@@ -1,6 +1,11 @@
 // ascii layout parser
 // - rlyeh
 
+// @todo: customizable interpolation: what to interpolate, how much, what tweening, etc
+// @todo: tree of rects
+// @todo: message capture/bypass/delegate/cancel
+// @todo: data M, render V, update C
+
 #include "deps/hyde/hyde.hpp"
 #include "deps/hyde/hyde.cpp"
 
@@ -8,6 +13,7 @@
 #include <map>
 #include "deps/wire/wire.hpp"
 #include "deps/medea/medea.hpp"
+#include "deps/flare/flare.hpp"
 
 struct point {
     float x = unsigned(~0u)/2, y = unsigned(~0u)/2;
@@ -243,9 +249,20 @@ struct tweener {
 using tweeners = std::vector< tweener<rect> >;
 
 #include <functional>
+#include <utility>
+
 template<typename USERDEF>
-using events = std::map< std::string, std::function<bool(const rect &r, const USERDEF &inputs)> >;
-using callbacks = std::vector< std::function<void()> >;
+struct event {
+    // condition
+    std::function<bool(const rect &r, const USERDEF &inputs)> ifs;
+    // triggers
+    std::function<void(const rect &r)> in, on, out, off;  
+};
+
+const std::function<void(const rect &r)> nil;
+
+template<typename USERDEF>
+using events = std::map< std::string, event<USERDEF> >;
 
 struct cursor {
     int x, y, w, h;
@@ -284,7 +301,29 @@ void swap( tweeners &tws ) {
     }
 }
 
+#include <cassert>
+
+#define check(a,b,c,d) assert(is_up(64) == a); assert(is_on(64) == b); assert(is_down(64) == c); assert(is_off(64) == d);
+
 int main() {
+
+        check(0,0,0,1);
+        check(0,0,0,1);
+        frame();
+        check(0,0,0,1);
+        check(0,0,0,1);
+
+        set(64);
+        check(1,0,0,0);
+        check(1,0,0,0);
+        frame();
+        check(0,1,0,0);
+        check(0,1,0,0);
+        frame();
+        check(0,1,0,0);
+        check(0,1,0,0);
+
+
 #   define $QUOTE(...) #__VA_ARGS__
     std::string horizontal = $QUOTE(
         a.........................b
@@ -320,14 +359,18 @@ int main() {
         int mousex, mousey;
     };
 
-    std::string logger;
+    std::string history, logger;
     events<input> evs = { 
-        { "hover", [&]( const rect &r, const input &inp ) {
-            if( inside( r, inp.mousex, inp.mousey ) ) {
-                logger += r.name + ',';
+        { "hover", { 
+            // condition
+            [&]( const rect &r, const input &inp ) { return inside( r, inp.mousex, inp.mousey ); }, 
+            // triggers
+            [&]( const rect &r ) { history += "hover.up(" + r.name + ")\n"; }, 
+            [&]( const rect &r ) { logger += "hover.on(" + r.name + "),"; }, 
+            [&]( const rect &r ) { history += "hover.down(" + r.name + ")\n"; }, 
+            [&]( const rect &r ) { logger += "hover.off(" + r.name + "),"; }, 
             }
-            return true;
-        } }
+        } 
     };
 
     auto setup = [&]() {
@@ -409,18 +452,40 @@ int main() {
             << " @wheel("  << mouse.wheel.newest().y << ")"
             << "               \n";
 
+        frame();
+
         logger.clear();
         input inp { arrow.x, arrow.y };
-        for( auto &rect : lyt.children ) {
+        for( const auto &rect : lyt.children ) {
             for( auto &evpair : evs ) {
                 auto &ev = evpair.second;
-                if( ev ) {
-                    ev( rect.second, inp );
+                const auto &r = rect.second;
+                auto hash = std::hash<std::string>()(r.name);
+                int ptr = int(hash >> 16) & 16383; // int(&r.name) & 16383;
+                if( ev.ifs && ev.ifs( r, inp ) ) {
+                    set( ptr );
+                    if( ev.in && is_up(ptr) ) {
+                        ev.in(r);
+                    }
+                    if( ev.on && is_on(ptr) ) {
+                        ev.on(r);
+                    }
+                } else {
+                    clear( ptr );
+                    if( ev.out && is_down(ptr) ) {
+                        ev.out(r);
+                    }
+                    if( ev.off && is_off(ptr) ) {
+                        ev.off(r);
+                    }
                 }
+//                logger += wire::string("\1,\2,\3,\4                    ", is_up(ptr), is_on(ptr), is_down(ptr), is_off(ptr));
+//                break;
             }
+//                break;
         }
         if( logger.empty() ) logger = wire::string(40, ' ');
-        printf("%s\n", logger.c_str());
+        printf("%s\n%s\n", logger.c_str(), history.c_str() );
 
         fflush(stdout);
     }
