@@ -5,6 +5,7 @@
 // @todo: tree of rects
 // @todo: message capture/bypass/delegate/cancel
 // @todo: data M, render V, update C
+// @todo: constrains : ie, tween x,w but keep y,h under contraints { px, %, anchors }
 
 #include "deps/hyde/hyde.hpp"
 #include "deps/hyde/hyde.cpp"
@@ -267,10 +268,20 @@ using events = std::map< std::string, event<USERDEF> >;
 struct cursor {
     int x, y, w, h;
 };
-cursor refresh() {
+cursor refresh() {   
     CONSOLE_SCREEN_BUFFER_INFO a;
     HANDLE hStdOut = GetStdHandle(STD_OUTPUT_HANDLE);
     GetConsoleScreenBufferInfo(hStdOut,&a);
+
+    HANDLE hStdIn = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD flags;
+    if( 0 != GetConsoleMode(hStdIn, &flags)) {
+        flags |=  ENABLE_EXTENDED_FLAGS;
+        //flags &= ~ENABLE_INSERT_MODE;
+        //flags &= ~ENABLE_PROCESSED_INPUT;
+        flags &= ~ENABLE_QUICK_EDIT_MODE;
+        SetConsoleMode(hStdIn, flags );
+    }
 
     static SHORT CX = 0, CY = 0;
 
@@ -356,7 +367,7 @@ int main() {
     std::vector< tweener<rect> > tws;
 
     struct input {
-        int mousex, mousey;
+        int mousex, mousey, click;
     };
 
     std::string history, logger;
@@ -369,6 +380,16 @@ int main() {
             [&]( const rect &r ) { logger += "hover.on(" + r.name + "),"; }, 
             [&]( const rect &r ) { history += "hover.down(" + r.name + ")\n"; }, 
             [&]( const rect &r ) { logger += "hover.off(" + r.name + "),"; }, 
+            }
+        },
+        { "click", { 
+            // condition
+            [&]( const rect &r, const input &inp ) { return inside( r, inp.mousex, inp.mousey ) && inp.click; }, 
+            // triggers
+            [&]( const rect &r ) { history += "click.up(" + r.name + ")\n"; }, 
+            [&]( const rect &r ) { logger += "click.on(" + r.name + "),"; }, 
+            [&]( const rect &r ) { history += "click.down(" + r.name + ")\n"; }, 
+            [&]( const rect &r ) { logger += "click.off(" + r.name + "),"; }, 
             }
         } 
     };
@@ -455,12 +476,12 @@ int main() {
         frame();
 
         logger.clear();
-        input inp { arrow.x, arrow.y };
+        input inp { arrow.x, arrow.y, mouse.left.hold() };
         for( const auto &rect : lyt.children ) {
             for( auto &evpair : evs ) {
                 auto &ev = evpair.second;
                 const auto &r = rect.second;
-                auto hash = std::hash<std::string>()(r.name);
+                auto hash = std::hash<std::string>()(r.name + evpair.first);
                 int ptr = int(hash >> 16) & 16383; // int(&r.name) & 16383;
                 if( ev.ifs && ev.ifs( r, inp ) ) {
                     set( ptr );
